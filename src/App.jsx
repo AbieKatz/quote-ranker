@@ -6,8 +6,10 @@ import { ref, onValue, push, set, get } from 'firebase/database';
 export default function QuoteVotingApp() {
   const [quotes, setQuotes] = useState([]);
   const [newQuote, setNewQuote] = useState('');
-  const [newAuthor, setNewAuthor] = useState('');
-  const [showForm, setShowForm] = useState(false);
+const [newAuthor, setNewAuthor] = useState('');
+const [newSource, setNewSource] = useState('');
+const [newTags, setNewTags] = useState('');
+const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -31,23 +33,27 @@ export default function QuoteVotingApp() {
   }, []);
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (newQuote.trim()) {
-      const quote = {
-        text: newQuote.trim(),
-        author: newAuthor.trim() || 'Anonymous',
-        votes: 0,
-        timestamp: Date.now()
-      };
+  e.preventDefault();
+  if (newQuote.trim()) {
+    const quote = {
+      text: newQuote.trim(),
+      author: newAuthor.trim() || 'Anonymous',
+      source: newSource.trim() || '',
+      tags: newTags.trim() || '',
+      votes: 0,
+      timestamp: Date.now()
+    };
 
-      const quotesRef = ref(database, 'quotes');
-      await push(quotesRef, quote);
-      
-      setNewQuote('');
-      setNewAuthor('');
-      setShowForm(false);
-    }
-  };
+    const quotesRef = ref(database, 'quotes');
+    await push(quotesRef, quote);
+    
+    setNewQuote('');
+    setNewAuthor('');
+    setNewSource('');
+    setNewTags('');
+    setShowForm(false);
+  }
+};
 
   const vote = async (id, delta) => {
     const quoteRef = ref(database, `quotes/${id}`);
@@ -94,6 +100,14 @@ export default function QuoteVotingApp() {
                 <textarea value={newQuote} onChange={(e) => setNewQuote(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" rows="3" placeholder="Enter the quote..." required />
               </div>
               <div className="mb-4">
+    <label className="block text-gray-700 font-medium mb-2">Source (optional)</label>
+    <input type="text" value={newSource} onChange={(e) => setNewSource(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Book, speech, article..." />
+  </div>
+  <div className="mb-4">
+    <label className="block text-gray-700 font-medium mb-2">Tags (optional)</label>
+    <input type="text" value={newTags} onChange={(e) => setNewTags(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="stoicism, motivation, life..." />
+  </div>
+              <div className="mb-4">
                 <label className="block text-gray-700 font-medium mb-2">Author (optional)</label>
                 <input type="text" value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Who said this?" />
               </div>
@@ -123,7 +137,11 @@ export default function QuoteVotingApp() {
                       <span className="text-3xl text-purple-300 leading-none">"</span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <p className="text-gray-600 font-medium">— {quote.author}</p>
+                      <div>
+  <p className="text-gray-600 font-medium">— {quote.author}</p>
+  {quote.source && <p className="text-sm text-gray-500 italic mt-1">From: {quote.source}</p>}
+  {quote.tags && <p className="text-xs text-purple-600 mt-2">🏷️ {quote.tags}</p>}
+</div>
                       <span className="text-sm text-gray-400">#{index + 1}</span>
                     </div>
                   </div>
