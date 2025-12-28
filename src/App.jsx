@@ -1,63 +1,83 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUp, ArrowDown, Plus } from 'lucide-react';
+import { database } from './firebase';
+import { ref, onValue, push, set, get } from 'firebase/database';
 
 export default function QuoteVotingApp() {
   const [quotes, setQuotes] = useState([]);
   const [newQuote, setNewQuote] = useState('');
   const [newAuthor, setNewAuthor] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const saved = localStorage.getItem('quotes');
-    if (saved) {
-      setQuotes(JSON.parse(saved));
-    } else {
-      const sampleQuotes = [
-        { id: 1, text: "Be yourself; everyone else is already taken.", author: "Oscar Wilde", votes: 5 },
-        { id: 2, text: "The only way to do great work is to love what you do.", author: "Steve Jobs", votes: 3 },
-        { id: 3, text: "In the middle of difficulty lies opportunity.", author: "Albert Einstein", votes: 7 }
-      ];
-      setQuotes(sampleQuotes);
-      localStorage.setItem('quotes', JSON.stringify(sampleQuotes));
-    }
+    const quotesRef = ref(database, 'quotes');
+    
+    const unsubscribe = onValue(quotesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const quotesArray = Object.keys(data).map(key => ({
+          id: key,
+          ...data[key]
+        }));
+        setQuotes(quotesArray);
+      } else {
+        setQuotes([]);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (quotes.length > 0) {
-      localStorage.setItem('quotes', JSON.stringify(quotes));
-    }
-  }, [quotes]);
-
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (newQuote.trim()) {
       const quote = {
-        id: Date.now(),
         text: newQuote.trim(),
         author: newAuthor.trim() || 'Anonymous',
-        votes: 0
+        votes: 0,
+        timestamp: Date.now()
       };
-      setQuotes([...quotes, quote]);
+
+      const quotesRef = ref(database, 'quotes');
+      await push(quotesRef, quote);
+      
       setNewQuote('');
       setNewAuthor('');
       setShowForm(false);
     }
   };
 
-  const vote = (id, delta) => {
-    setQuotes(quotes.map(q => 
-      q.id === id ? { ...q, votes: q.votes + delta } : q
-    ));
+  const vote = async (id, delta) => {
+    const quoteRef = ref(database, `quotes/${id}`);
+    const snapshot = await get(quoteRef);
+    const currentVotes = snapshot.val()?.votes || 0;
+    await set(quoteRef, {
+      ...snapshot.val(),
+      votes: currentVotes + delta
+    });
   };
 
   const sortedQuotes = [...quotes].sort((a, b) => b.votes - a.votes);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-purple-600 text-2xl mb-4">Loading quotes...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-8 px-4">
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Quote Ranker</h1>
+          <h1 className="text-4xl font-bold text-gray-800 mb-2">Quottit</h1>
           <p className="text-gray-600">Share your favorite quotes and vote on others</p>
+          <p className="text-sm text-green-600 mt-2">🔥 Live - Everyone sees the same quotes!</p>
         </div>
         <div className="mb-6">
           <button onClick={() => setShowForm(!showForm)} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-colors">
@@ -113,7 +133,7 @@ export default function QuoteVotingApp() {
           )}
         </div>
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>💡 Tip: Your quotes are saved in your browser</p>
+          <p>🔥 Connected to Firebase - Quotes sync in real-time!</p>
         </div>
       </div>
     </div>
