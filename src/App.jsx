@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ArrowUp, ArrowDown, Plus, Search, Filter, Share2, User, LogOut, LogIn } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ArrowUp, ArrowDown, Plus, Search, MessageSquare, Share2, User, LogOut, LogIn, ChevronDown, ChevronRight, Send } from 'lucide-react';
 import { database } from './firebase';
 import { ref, onValue, push, set, get } from 'firebase/database';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -17,11 +17,14 @@ export default function QuoteVotingApp() {
   const [filterAuthor, setFilterAuthor] = useState('');
   const [user, setUser] = useState(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [viewMode, setViewMode] = useState('all'); // 'all', 'qotd', 'myQuotes'
+  const [viewMode, setViewMode] = useState('all');
+  const [expandedQuote, setExpandedQuote] = useState(null);
+  const [comments, setComments] = useState({});
+  const [collapsedComments, setCollapsedComments] = useState({});
+  const [replyingTo, setReplyingTo] = useState(null);
 
   const auth = getAuth();
 
-  // Listen for auth state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -29,7 +32,6 @@ export default function QuoteVotingApp() {
     return () => unsubscribe();
   }, []);
 
-  // Load quotes from Firebase
   useEffect(() => {
     const quotesRef = ref(database, 'quotes');
     
@@ -50,14 +52,32 @@ export default function QuoteVotingApp() {
     return () => unsubscribe();
   }, []);
 
-  // Get unique tags and authors for filters
+  useEffect(() => {
+    if (!expandedQuote) return;
+
+    const commentsRef = ref(database, `comments/${expandedQuote}`);
+    const unsubscribe = onValue(commentsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const commentsArray = Object.keys(data).map(key => ({
+          id: key,
+          ...data[key]
+        }));
+        setComments(prev => ({ ...prev, [expandedQuote]: commentsArray }));
+      } else {
+        setComments(prev => ({ ...prev, [expandedQuote]: [] }));
+      }
+    });
+
+    return () => unsubscribe();
+  }, [expandedQuote]);
+
   const allTags = [...new Set(quotes.flatMap(q => 
     q.tags ? q.tags.split(',').map(t => t.trim()) : []
   ))].sort();
   
   const allAuthors = [...new Set(quotes.map(q => q.author))].sort();
 
-  // Sign in with Google
   const handleSignIn = async () => {
     const provider = new GoogleAuthProvider();
     try {
@@ -67,7 +87,6 @@ export default function QuoteVotingApp() {
     }
   };
 
-  // Sign out
   const handleSignOut = async () => {
     try {
       await signOut(auth);
@@ -77,7 +96,6 @@ export default function QuoteVotingApp() {
     }
   };
 
-  // Submit new quote
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (newQuote.trim()) {
@@ -107,7 +125,6 @@ export default function QuoteVotingApp() {
     }
   };
 
-  // Vote on quote
   const vote = async (id, delta) => {
     const quoteRef = ref(database, `quotes/${id}`);
     const snapshot = await get(quoteRef);
@@ -118,7 +135,16 @@ export default function QuoteVotingApp() {
     });
   };
 
-  // Share quote
+  const voteComment = async (quoteId, commentId, delta) => {
+    const commentRef = ref(database, `comments/${quoteId}/${commentId}`);
+    const snapshot = await get(commentRef);
+    const currentVotes = snapshot.val()?.votes || 0;
+    await set(commentRef, {
+      ...snapshot.val(),
+      votes: currentVotes + delta
+    });
+  };
+
   const shareQuote = async (quote) => {
     const text = `"${quote.text}" — ${quote.author}`;
     if (navigator.share) {
@@ -133,9 +159,183 @@ export default function QuoteVotingApp() {
     }
   };
 
-  // Filter and sort quotes
+  const submitComment = async (quoteId, textareaId, parentId = null) => {
+    if (!user) {
+      alert('Please sign in to comment');
+      return;
+    }
+    
+    const textarea = document.getElementById(textareaId);
+    const text = textarea.value;
+    
+    if (!text.trim()) return;
+
+    const comment = {
+      text: text.trim(),
+      author: {
+        uid: user.uid,
+        name: user.displayName,
+        photoURL: user.photoURL
+      },
+      timestamp: Date.now(),
+      votes: 0,
+      parentId: parentId
+    };
+
+    const commentsRef = ref(database, `comments/${quoteId}`);
+    await push(commentsRef, comment);
+    
+    textarea.value = '';
+    setReplyingTo(null);
+  };
+
+  const toggleCollapse = (commentId) => {
+    setCollapsedComments(prev => ({
+      ...prev,
+      [commentId]: !prev[commentId]
+    }));
+  };
+
+  const buildCommentTree = (quoteId) => {
+    const quoteComments = comments[quoteId] || [];
+    const commentMap = {};
+    const rootComments = [];
+
+    quoteComments.forEach(comment => {
+      commentMap[comment.id] = { ...comment, replies: [] };
+    });
+
+    quoteComments.forEach(comment => {
+      if (comment.parentId && commentMap[comment.parentId]) {
+        commentMap[comment.parentId].replies.push(commentMap[comment.id]);
+      } else {
+        rootComments.push(commentMap[comment.id]);
+      }
+    });
+
+    const sortByVotes = (a, b) => (b.votes || 0) - (a.votes || 0);
+    rootComments.sort(sortByVotes);
+    Object.values(commentMap).forEach(comment => {
+      comment.replies.sort(sortByVotes);
+    });
+
+    return rootComments;
+  };
+
+  const CommentThread = ({ comment, quoteId, depth = 0 }) => {
+    const isCollapsed = collapsedComments[comment.id];
+    const replyCount = comment.replies?.length || 0;
+    const timeAgo = getTimeAgo(comment.timestamp);
+    const replyTextareaId = `reply-${comment.id}`;
+
+    return (
+      <div className={`${depth > 0 ? 'ml-8 border-l-2 border-gray-200 pl-4' : ''} mb-4`}>
+        <div className="flex gap-3">
+          <div className="flex flex-col items-center gap-1">
+            <button
+              onClick={() => voteComment(quoteId, comment.id, 1)}
+              className="text-gray-400 hover:text-green-600"
+            >
+              <ArrowUp size={16} />
+            </button>
+            <span className={`text-xs font-medium ${comment.votes > 0 ? 'text-green-600' : 'text-gray-500'}`}>
+              {comment.votes || 0}
+            </span>
+            <button
+              onClick={() => voteComment(quoteId, comment.id, -1)}
+              className="text-gray-400 hover:text-red-600"
+            >
+              <ArrowDown size={16} />
+            </button>
+          </div>
+
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              {comment.author.photoURL && (
+                <img src={comment.author.photoURL} className="w-5 h-5 rounded-full" alt="" />
+              )}
+              <span className="text-sm font-medium text-gray-700">{comment.author.name}</span>
+              <span className="text-xs text-gray-400">{timeAgo}</span>
+              {replyCount > 0 && (
+                <button
+                  onClick={() => toggleCollapse(comment.id)}
+                  className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                >
+                  {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  {isCollapsed && `[${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}]`}
+                </button>
+              )}
+            </div>
+
+            {!isCollapsed && (
+              <>
+                <p className="text-sm text-gray-800 mb-2 whitespace-pre-wrap">{comment.text}</p>
+                
+                <button
+                  onClick={() => setReplyingTo(replyingTo === comment.id ? null : comment.id)}
+                  className="text-xs text-purple-600 hover:text-purple-700"
+                >
+                  reply
+                </button>
+
+                {replyingTo === comment.id && (
+                  <div className="mt-3">
+                    <textarea
+                      id={replyTextareaId}
+                      key={replyTextareaId}
+                      placeholder="Write a reply..."
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      rows="3"
+                    />
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => submitComment(quoteId, replyTextareaId, comment.id)}
+                        className="px-3 py-1 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                      >
+                        Reply
+                      </button>
+                      <button
+                        onClick={() => setReplyingTo(null)}
+                        className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!isCollapsed && comment.replies && comment.replies.length > 0 && (
+                  <div className="mt-3">
+                    {comment.replies.map(reply => (
+                      <CommentThread
+                        key={reply.id}
+                        comment={reply}
+                        quoteId={quoteId}
+                        depth={depth + 1}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const getTimeAgo = (timestamp) => {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
+
   const filteredQuotes = quotes.filter(quote => {
-    // Search filter
     if (searchQuery) {
       const search = searchQuery.toLowerCase();
       const matchesSearch = 
@@ -146,17 +346,14 @@ export default function QuoteVotingApp() {
       if (!matchesSearch) return false;
     }
 
-    // Tag filter
     if (filterTag && (!quote.tags || !quote.tags.includes(filterTag))) {
       return false;
     }
 
-    // Author filter
     if (filterAuthor && quote.author !== filterAuthor) {
       return false;
     }
 
-    // View mode filter
     if (viewMode === 'myQuotes' && user) {
       if (!quote.submittedBy || quote.submittedBy.uid !== user.uid) {
         return false;
@@ -168,7 +365,6 @@ export default function QuoteVotingApp() {
 
   const sortedQuotes = [...filteredQuotes].sort((a, b) => b.votes - a.votes);
 
-  // Quote of the Day (deterministic based on date)
   const getQuoteOfTheDay = () => {
     if (quotes.length === 0) return null;
     const today = new Date().toDateString();
@@ -178,7 +374,6 @@ export default function QuoteVotingApp() {
 
   const quoteOfTheDay = getQuoteOfTheDay();
 
-  // Clear all filters
   const clearFilters = () => {
     setSearchQuery('');
     setFilterTag('');
@@ -198,7 +393,6 @@ export default function QuoteVotingApp() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
-        {/* Header with Auth */}
         <div className="flex justify-between items-center mb-8">
           <div className="text-center flex-1">
             <h1 className="text-4xl font-bold text-gray-800 mb-2">Quottit</h1>
@@ -206,7 +400,6 @@ export default function QuoteVotingApp() {
             <p className="text-sm text-green-600 mt-2">🔥 Live - {quotes.length} quotes</p>
           </div>
           
-          {/* User Profile */}
           <div className="relative">
             {user ? (
               <div>
@@ -258,7 +451,6 @@ export default function QuoteVotingApp() {
           </div>
         </div>
 
-        {/* View Mode Tabs */}
         <div className="flex gap-2 mb-6">
           <button
             onClick={() => setViewMode('all')}
@@ -294,7 +486,6 @@ export default function QuoteVotingApp() {
           )}
         </div>
 
-        {/* Quote of the Day View */}
         {viewMode === 'qotd' && quoteOfTheDay && (
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-gray-800 mb-4">✨ Quote of the Day</h2>
@@ -326,11 +517,9 @@ export default function QuoteVotingApp() {
           </div>
         )}
 
-        {/* Search and Filters (only show in 'all' and 'myQuotes' mode) */}
         {viewMode !== 'qotd' && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Search */}
               <div className="relative">
                 <Search className="absolute left-3 top-3 text-gray-400" size={20} />
                 <input
@@ -342,7 +531,6 @@ export default function QuoteVotingApp() {
                 />
               </div>
 
-              {/* Tag Filter */}
               <select
                 value={filterTag}
                 onChange={(e) => setFilterTag(e.target.value)}
@@ -354,7 +542,6 @@ export default function QuoteVotingApp() {
                 ))}
               </select>
 
-              {/* Author Filter */}
               <select
                 value={filterAuthor}
                 onChange={(e) => setFilterAuthor(e.target.value)}
@@ -367,7 +554,6 @@ export default function QuoteVotingApp() {
               </select>
             </div>
 
-            {/* Clear Filters */}
             {(searchQuery || filterTag || filterAuthor) && (
               <button
                 onClick={clearFilters}
@@ -377,14 +563,12 @@ export default function QuoteVotingApp() {
               </button>
             )}
 
-            {/* Results count */}
             <p className="mt-4 text-sm text-gray-600">
               Showing {sortedQuotes.length} of {quotes.length} quotes
             </p>
           </div>
         )}
 
-        {/* Add Quote Button */}
         <div className="mb-6">
           <button
             onClick={() => setShowForm(!showForm)}
@@ -395,7 +579,6 @@ export default function QuoteVotingApp() {
           </button>
         </div>
 
-        {/* Quote Submission Form */}
         {showForm && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-800 mb-4">Submit a Quote</h2>
@@ -473,7 +656,6 @@ export default function QuoteVotingApp() {
           </div>
         )}
 
-        {/* Quotes List */}
         {viewMode !== 'qotd' && (
           <div className="space-y-4">
             {sortedQuotes.length === 0 ? (
@@ -483,67 +665,131 @@ export default function QuoteVotingApp() {
                   : "No quotes found. Try adjusting your filters or add a new quote!"}
               </div>
             ) : (
-              sortedQuotes.map((quote, index) => (
-                <div
-                  key={quote.id}
-                  className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition-shadow"
-                >
-                  <div className="flex gap-4">
-                    {/* Voting Buttons */}
-                    <div className="flex flex-col items-center gap-2">
-                      <button
-                        onClick={() => vote(quote.id, 1)}
-                        className="p-2 rounded-full hover:bg-green-100 text-gray-600 hover:text-green-600 transition-colors"
-                      >
-                        <ArrowUp size={24} />
-                      </button>
-                      <div className={`text-xl font-bold ${quote.votes > 0 ? 'text-green-600' : quote.votes < 0 ? 'text-red-600' : 'text-gray-600'}`}>
-                        {quote.votes}
-                      </div>
-                      <button
-                        onClick={() => vote(quote.id, -1)}
-                        className="p-2 rounded-full hover:bg-red-100 text-gray-600 hover:text-red-600 transition-colors"
-                      >
-                        <ArrowDown size={24} />
-                      </button>
-                    </div>
+              sortedQuotes.map((quote, index) => {
+                const isExpanded = expandedQuote === quote.id;
+                const commentCount = (comments[quote.id] || []).length;
+                const mainTextareaId = `comment-main-${quote.id}`;
 
-                    {/* Quote Content */}
-                    <div className="flex-1">
-                      <div className="flex items-start gap-2 mb-2">
-                        <span className="text-3xl text-purple-300 leading-none">"</span>
-                        <p className="text-lg text-gray-800 italic pt-1">{quote.text}</p>
-                        <span className="text-3xl text-purple-300 leading-none">"</span>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-gray-600 font-medium">— {quote.author}</p>
-                        {quote.source && (
-                          <p className="text-sm text-gray-500 italic">From: {quote.source}</p>
-                        )}
-                        {quote.tags && (
-                          <p className="text-xs text-purple-600">🏷️ {quote.tags}</p>
-                        )}
-                      
-                        <div className="flex items-center justify-between pt-2">
-                          <span className="text-sm text-gray-400">#{index + 1}</span>
-                          <button
-                            onClick={() => shareQuote(quote)}
-                            className="flex items-center gap-1 text-sm text-purple-600 hover:text-purple-700"
-                          >
-                            <Share2 size={16} />
-                            Share
-                          </button>
+                return (
+                  <div
+                    key={quote.id}
+                    className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition-shadow"
+                  >
+                    <div className="flex gap-4">
+                      <div className="flex flex-col items-center gap-2">
+                        <button
+                          onClick={() => vote(quote.id, 1)}
+                          className="p-2 rounded-full hover:bg-green-100 text-gray-600 hover:text-green-600 transition-colors"
+                        >
+                          <ArrowUp size={24} />
+                        </button>
+                        <div className={`text-xl font-bold ${quote.votes > 0 ? 'text-green-600' : quote.votes < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                          {quote.votes}
                         </div>
+                        <button
+                          onClick={() => vote(quote.id, -1)}
+                          className="p-2 rounded-full hover:bg-red-100 text-gray-600 hover:text-red-600 transition-colors"
+                        >
+                          <ArrowDown size={24} />
+                        </button>
+                      </div>
+
+                      <div className="flex-1">
+                        <div className="flex items-start gap-2 mb-2">
+                          <span className="text-3xl text-purple-300 leading-none">"</span>
+                          <p className="text-lg text-gray-800 italic pt-1">{quote.text}</p>
+                          <span className="text-3xl text-purple-300 leading-none">"</span>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-gray-600 font-medium">— {quote.author}</p>
+                          {quote.source && (
+                            <p className="text-sm text-gray-500 italic">From: {quote.source}</p>
+                          )}
+                          {quote.tags && (
+                            <p className="text-xs text-purple-600">🏷️ {quote.tags}</p>
+                          )}
+                          <div className="flex items-center gap-4 pt-2">
+                            <span className="text-sm text-gray-400">#{index + 1}</span>
+                            <button
+                              onClick={() => setExpandedQuote(isExpanded ? null : quote.id)}
+                              className="flex items-center gap-1 text-sm text-purple-600 hover:text-purple-700"
+                            >
+                              <MessageSquare size={16} />
+                              {commentCount > 0 ? `${commentCount} ${commentCount === 1 ? 'comment' : 'comments'}` : 'discuss'}
+                            </button>
+                            <button
+                              onClick={() => shareQuote(quote)}
+                              className="flex items-center gap-1 text-sm text-purple-600 hover:text-purple-700"
+                            >
+                              <Share2 size={16} />
+                              Share
+                            </button>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="mt-6 pt-6 border-t border-gray-200">
+                            <h3 className="text-lg font-semibold text-gray-800 mb-4">
+                              Discussion {commentCount > 0 && `(${commentCount})`}
+                            </h3>
+
+                            {user ? (
+                              <div className="mb-6">
+                                <textarea
+                                  id={mainTextareaId}
+                                  key={mainTextareaId}
+                                  placeholder="Share your thoughts..."
+                                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                  rows="3"
+                                />
+                                <div className="flex gap-2 mt-2">
+                                  <button
+                                    onClick={() => submitComment(quote.id, mainTextareaId)}
+                                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                                  >
+                                    <Send size={16} />
+                                    Comment
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
+                                <p className="text-sm text-gray-600 mb-2">Sign in to join the discussion</p>
+                                <button
+                                  onClick={handleSignIn}
+                                  className="text-sm text-purple-600 hover:text-purple-700 font-medium"
+                                >
+                                  Sign In
+                                </button>
+                              </div>
+                            )}
+
+                            {commentCount > 0 ? (
+                              <div className="space-y-4">
+                                {buildCommentTree(quote.id).map(comment => (
+                                  <CommentThread
+                                    key={comment.id}
+                                    comment={comment}
+                                    quoteId={quote.id}
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-500 text-center py-8">
+                                No comments yet. Be the first to share your thoughts!
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
 
-        {/* Footer */}
         <div className="mt-8 text-center text-sm text-gray-500">
           <p>🔥 Built with passion • {quotes.length} quotes and counting</p>
         </div>
