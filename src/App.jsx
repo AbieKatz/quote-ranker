@@ -1,17 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowUp, ArrowDown, Plus } from 'lucide-react';
+import { ArrowUp, ArrowDown, Plus, Search, Filter, Share2, User, LogOut, LogIn } from 'lucide-react';
 import { database } from './firebase';
 import { ref, onValue, push, set, get } from 'firebase/database';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 
 export default function QuoteVotingApp() {
   const [quotes, setQuotes] = useState([]);
   const [newQuote, setNewQuote] = useState('');
-const [newAuthor, setNewAuthor] = useState('');
-const [newSource, setNewSource] = useState('');
-const [newTags, setNewTags] = useState('');
-const [showForm, setShowForm] = useState(false);
+  const [newAuthor, setNewAuthor] = useState('');
+  const [newSource, setNewSource] = useState('');
+  const [newTags, setNewTags] = useState('');
+  const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterTag, setFilterTag] = useState('');
+  const [filterAuthor, setFilterAuthor] = useState('');
+  const [user, setUser] = useState(null);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [viewMode, setViewMode] = useState('all'); // 'all', 'qotd', 'myQuotes'
 
+  const auth = getAuth();
+
+  // Listen for auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Load quotes from Firebase
   useEffect(() => {
     const quotesRef = ref(database, 'quotes');
     
@@ -32,29 +50,64 @@ const [showForm, setShowForm] = useState(false);
     return () => unsubscribe();
   }, []);
 
+  // Get unique tags and authors for filters
+  const allTags = [...new Set(quotes.flatMap(q => 
+    q.tags ? q.tags.split(',').map(t => t.trim()) : []
+  ))].sort();
+  
+  const allAuthors = [...new Set(quotes.map(q => q.author))].sort();
+
+  // Sign in with Google
+  const handleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error('Error signing in:', error);
+    }
+  };
+
+  // Sign out
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setShowProfileMenu(false);
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
+  // Submit new quote
   const handleSubmit = async (e) => {
-  e.preventDefault();
-  if (newQuote.trim()) {
-    const quote = {
-      text: newQuote.trim(),
-      author: newAuthor.trim() || 'Anonymous',
-      source: newSource.trim() || '',
-      tags: newTags.trim() || '',
-      votes: 0,
-      timestamp: Date.now()
-    };
+    e.preventDefault();
+    if (newQuote.trim()) {
+      const quote = {
+        text: newQuote.trim(),
+        author: newAuthor.trim() || 'Anonymous',
+        source: newSource.trim() || '',
+        tags: newTags.trim() || '',
+        votes: 0,
+        timestamp: Date.now(),
+        submittedBy: user ? {
+          uid: user.uid,
+          name: user.displayName,
+          email: user.email,
+          photoURL: user.photoURL
+        } : null
+      };
 
-    const quotesRef = ref(database, 'quotes');
-    await push(quotesRef, quote);
-    
-    setNewQuote('');
-    setNewAuthor('');
-    setNewSource('');
-    setNewTags('');
-    setShowForm(false);
-  }
-};
+      const quotesRef = ref(database, 'quotes');
+      await push(quotesRef, quote);
+      
+      setNewQuote('');
+      setNewAuthor('');
+      setNewSource('');
+      setNewTags('');
+      setShowForm(false);
+    }
+  };
 
+  // Vote on quote
   const vote = async (id, delta) => {
     const quoteRef = ref(database, `quotes/${id}`);
     const snapshot = await get(quoteRef);
@@ -65,7 +118,72 @@ const [showForm, setShowForm] = useState(false);
     });
   };
 
-  const sortedQuotes = [...quotes].sort((a, b) => b.votes - a.votes);
+  // Share quote
+  const shareQuote = async (quote) => {
+    const text = `"${quote.text}" — ${quote.author}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ text, url: window.location.href });
+      } catch (err) {
+        console.log('Share cancelled');
+      }
+    } else {
+      navigator.clipboard.writeText(text);
+      alert('Quote copied to clipboard!');
+    }
+  };
+
+  // Filter and sort quotes
+  const filteredQuotes = quotes.filter(quote => {
+    // Search filter
+    if (searchQuery) {
+      const search = searchQuery.toLowerCase();
+      const matchesSearch = 
+        quote.text.toLowerCase().includes(search) ||
+        quote.author.toLowerCase().includes(search) ||
+        (quote.tags && quote.tags.toLowerCase().includes(search)) ||
+        (quote.source && quote.source.toLowerCase().includes(search));
+      if (!matchesSearch) return false;
+    }
+
+    // Tag filter
+    if (filterTag && (!quote.tags || !quote.tags.includes(filterTag))) {
+      return false;
+    }
+
+    // Author filter
+    if (filterAuthor && quote.author !== filterAuthor) {
+      return false;
+    }
+
+    // View mode filter
+    if (viewMode === 'myQuotes' && user) {
+      if (!quote.submittedBy || quote.submittedBy.uid !== user.uid) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const sortedQuotes = [...filteredQuotes].sort((a, b) => b.votes - a.votes);
+
+  // Quote of the Day (deterministic based on date)
+  const getQuoteOfTheDay = () => {
+    if (quotes.length === 0) return null;
+    const today = new Date().toDateString();
+    const hash = today.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    return quotes[hash % quotes.length];
+  };
+
+  const quoteOfTheDay = getQuoteOfTheDay();
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchQuery('');
+    setFilterTag('');
+    setFilterAuthor('');
+  };
 
   if (loading) {
     return (
@@ -79,79 +197,355 @@ const [showForm, setShowForm] = useState(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-8 px-4">
-      <div className="max-w-3xl mx-auto">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Quottit</h1>
-          <p className="text-gray-600">Share your favorite quotes and vote on others</p>
-          <p className="text-sm text-green-600 mt-2">🔥 Live - Everyone sees the same quotes!</p>
+      <div className="max-w-4xl mx-auto">
+        {/* Header with Auth */}
+        <div className="flex justify-between items-center mb-8">
+          <div className="text-center flex-1">
+            <h1 className="text-4xl font-bold text-gray-800 mb-2">Quottit</h1>
+            <p className="text-gray-600">Discover wisdom, one quote at a time</p>
+            <p className="text-sm text-green-600 mt-2">🔥 Live - {quotes.length} quotes</p>
+          </div>
+          
+          {/* User Profile */}
+          <div className="relative">
+            {user ? (
+              <div>
+                <button
+                  onClick={() => setShowProfileMenu(!showProfileMenu)}
+                  className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/50 transition-colors"
+                >
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName} className="w-10 h-10 rounded-full" />
+                  ) : (
+                    <User size={24} className="text-gray-600" />
+                  )}
+                </button>
+                
+                {showProfileMenu && (
+                  <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg p-4 z-10">
+                    <div className="mb-4">
+                      <p className="font-semibold text-gray-800">{user.displayName}</p>
+                      <p className="text-sm text-gray-500">{user.email}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setViewMode('myQuotes');
+                        setShowProfileMenu(false);
+                      }}
+                      className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg mb-2"
+                    >
+                      My Quotes
+                    </button>
+                    <button
+                      onClick={handleSignOut}
+                      className="w-full flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg"
+                    >
+                      <LogOut size={18} />
+                      Sign Out
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={handleSignIn}
+                className="flex items-center gap-2 px-4 py-2 bg-white text-gray-700 rounded-lg hover:bg-gray-50 transition-colors shadow-md"
+              >
+                <LogIn size={18} />
+                Sign In
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* View Mode Tabs */}
+        <div className="flex gap-2 mb-6">
+          <button
+            onClick={() => setViewMode('all')}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              viewMode === 'all' 
+                ? 'bg-purple-600 text-white' 
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            All Quotes
+          </button>
+          <button
+            onClick={() => setViewMode('qotd')}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              viewMode === 'qotd' 
+                ? 'bg-purple-600 text-white' 
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Quote of the Day
+          </button>
+          {user && (
+            <button
+              onClick={() => setViewMode('myQuotes')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                viewMode === 'myQuotes' 
+                  ? 'bg-purple-600 text-white' 
+                  : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              My Quotes
+            </button>
+          )}
+        </div>
+
+        {/* Quote of the Day View */}
+        {viewMode === 'qotd' && quoteOfTheDay && (
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">✨ Quote of the Day</h2>
+            <div className="bg-gradient-to-r from-purple-500 to-blue-500 rounded-lg shadow-2xl p-8 text-white">
+              <div className="flex items-start gap-2 mb-4">
+                <span className="text-5xl text-white/30 leading-none">"</span>
+                <p className="text-2xl font-light italic pt-2">{quoteOfTheDay.text}</p>
+                <span className="text-5xl text-white/30 leading-none">"</span>
+              </div>
+              <div className="flex items-center justify-between mt-6">
+                <p className="text-xl font-medium">— {quoteOfTheDay.author}</p>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => vote(quoteOfTheDay.id, 1)}
+                    className="p-3 rounded-full hover:bg-white/20 transition-colors"
+                  >
+                    <ArrowUp size={24} />
+                  </button>
+                  <div className="text-2xl font-bold">{quoteOfTheDay.votes}</div>
+                  <button
+                    onClick={() => vote(quoteOfTheDay.id, -1)}
+                    className="p-3 rounded-full hover:bg-white/20 transition-colors"
+                  >
+                    <ArrowDown size={24} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Search and Filters (only show in 'all' and 'myQuotes' mode) */}
+        {viewMode !== 'qotd' && (
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-3 text-gray-400" size={20} />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search quotes..."
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              {/* Tag Filter */}
+              <select
+                value={filterTag}
+                onChange={(e) => setFilterTag(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="">All Tags</option>
+                {allTags.map(tag => (
+                  <option key={tag} value={tag}>{tag}</option>
+                ))}
+              </select>
+
+              {/* Author Filter */}
+              <select
+                value={filterAuthor}
+                onChange={(e) => setFilterAuthor(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="">All Authors</option>
+                {allAuthors.map(author => (
+                  <option key={author} value={author}>{author}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Clear Filters */}
+            {(searchQuery || filterTag || filterAuthor) && (
+              <button
+                onClick={clearFilters}
+                className="mt-4 text-sm text-purple-600 hover:text-purple-700"
+              >
+                Clear all filters
+              </button>
+            )}
+
+            {/* Results count */}
+            <p className="mt-4 text-sm text-gray-600">
+              Showing {sortedQuotes.length} of {quotes.length} quotes
+            </p>
+          </div>
+        )}
+
+        {/* Add Quote Button */}
         <div className="mb-6">
-          <button onClick={() => setShowForm(!showForm)} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-colors">
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-colors"
+          >
             <Plus size={20} />
             Add New Quote
           </button>
         </div>
+
+        {/* Quote Submission Form */}
         {showForm && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-800 mb-4">Submit a Quote</h2>
+            {!user && (
+              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-sm text-yellow-800">
+                  💡 Sign in to get credit for your quotes and build your profile!
+                </p>
+              </div>
+            )}
             <form onSubmit={handleSubmit}>
               <div className="mb-4">
-                <label className="block text-gray-700 font-medium mb-2">Quote</label>
-                <textarea value={newQuote} onChange={(e) => setNewQuote(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" rows="3" placeholder="Enter the quote..." required />
+                <label className="block text-gray-700 font-medium mb-2">Quote *</label>
+                <textarea
+                  value={newQuote}
+                  onChange={(e) => setNewQuote(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  rows="3"
+                  placeholder="Enter the quote..."
+                  required
+                />
               </div>
               <div className="mb-4">
-    <label className="block text-gray-700 font-medium mb-2">Source (optional)</label>
-    <input type="text" value={newSource} onChange={(e) => setNewSource(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Book, speech, article..." />
-  </div>
-  <div className="mb-4">
-    <label className="block text-gray-700 font-medium mb-2">Tags (optional)</label>
-    <input type="text" value={newTags} onChange={(e) => setNewTags(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="stoicism, motivation, life..." />
-  </div>
+                <label className="block text-gray-700 font-medium mb-2">Author</label>
+                <input
+                  type="text"
+                  value={newAuthor}
+                  onChange={(e) => setNewAuthor(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="Who said this?"
+                />
+              </div>
               <div className="mb-4">
-                <label className="block text-gray-700 font-medium mb-2">Author (optional)</label>
-                <input type="text" value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Who said this?" />
+                <label className="block text-gray-700 font-medium mb-2">Source</label>
+                <input
+                  type="text"
+                  value={newSource}
+                  onChange={(e) => setNewSource(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="Book, speech, article..."
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-gray-700 font-medium mb-2">Tags</label>
+                <input
+                  type="text"
+                  value={newTags}
+                  onChange={(e) => setNewTags(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="stoicism, motivation, life..."
+                />
               </div>
               <div className="flex gap-3">
-                <button type="submit" className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">Submit Quote</button>
-                <button type="button" onClick={() => { setShowForm(false); setNewQuote(''); setNewAuthor(''); }} className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 px-4 rounded-lg transition-colors">Cancel</button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                >
+                  Submit Quote
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForm(false);
+                    setNewQuote('');
+                    setNewAuthor('');
+                    setNewSource('');
+                    setNewTags('');
+                  }}
+                  className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 px-4 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
               </div>
             </form>
           </div>
         )}
-        <div className="space-y-4">
-          {sortedQuotes.length === 0 ? (
-            <div className="bg-white rounded-lg shadow-lg p-8 text-center text-gray-500">No quotes yet. Be the first to add one!</div>
-          ) : (
-            sortedQuotes.map((quote, index) => (
-              <div key={quote.id} className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition-shadow">
-                <div className="flex gap-4">
-                  <div className="flex flex-col items-center gap-2">
-                    <button onClick={() => vote(quote.id, 1)} className="p-2 rounded-full hover:bg-green-100 text-gray-600 hover:text-green-600 transition-colors"><ArrowUp size={24} /></button>
-                    <div className={`text-xl font-bold ${quote.votes > 0 ? 'text-green-600' : quote.votes < 0 ? 'text-red-600' : 'text-gray-600'}`}>{quote.votes}</div>
-                    <button onClick={() => vote(quote.id, -1)} className="p-2 rounded-full hover:bg-red-100 text-gray-600 hover:text-red-600 transition-colors"><ArrowDown size={24} /></button>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-start gap-2 mb-2">
-                      <span className="text-3xl text-purple-300 leading-none">"</span>
-                      <p className="text-lg text-gray-800 italic pt-1">{quote.text}</p>
-                      <span className="text-3xl text-purple-300 leading-none">"</span>
+
+        {/* Quotes List */}
+        {viewMode !== 'qotd' && (
+          <div className="space-y-4">
+            {sortedQuotes.length === 0 ? (
+              <div className="bg-white rounded-lg shadow-lg p-8 text-center text-gray-500">
+                {viewMode === 'myQuotes' 
+                  ? "You haven't submitted any quotes yet. Add your first quote above!"
+                  : "No quotes found. Try adjusting your filters or add a new quote!"}
+              </div>
+            ) : (
+              sortedQuotes.map((quote, index) => (
+                <div
+                  key={quote.id}
+                  className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition-shadow"
+                >
+                  <div className="flex gap-4">
+                    {/* Voting Buttons */}
+                    <div className="flex flex-col items-center gap-2">
+                      <button
+                        onClick={() => vote(quote.id, 1)}
+                        className="p-2 rounded-full hover:bg-green-100 text-gray-600 hover:text-green-600 transition-colors"
+                      >
+                        <ArrowUp size={24} />
+                      </button>
+                      <div className={`text-xl font-bold ${quote.votes > 0 ? 'text-green-600' : quote.votes < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                        {quote.votes}
+                      </div>
+                      <button
+                        onClick={() => vote(quote.id, -1)}
+                        className="p-2 rounded-full hover:bg-red-100 text-gray-600 hover:text-red-600 transition-colors"
+                      >
+                        <ArrowDown size={24} />
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-  <p className="text-gray-600 font-medium">— {quote.author}</p>
-  {quote.source && <p className="text-sm text-gray-500 italic mt-1">From: {quote.source}</p>}
-  {quote.tags && <p className="text-xs text-purple-600 mt-2">🏷️ {quote.tags}</p>}
-</div>
-                      <span className="text-sm text-gray-400">#{index + 1}</span>
+
+                    {/* Quote Content */}
+                    <div className="flex-1">
+                      <div className="flex items-start gap-2 mb-2">
+                        <span className="text-3xl text-purple-300 leading-none">"</span>
+                        <p className="text-lg text-gray-800 italic pt-1">{quote.text}</p>
+                        <span className="text-3xl text-purple-300 leading-none">"</span>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-gray-600 font-medium">— {quote.author}</p>
+                        {quote.source && (
+                          <p className="text-sm text-gray-500 italic">From: {quote.source}</p>
+                        )}
+                        {quote.tags && (
+                          <p className="text-xs text-purple-600">🏷️ {quote.tags}</p>
+                        )}
+                      
+                        <div className="flex items-center justify-between pt-2">
+                          <span className="text-sm text-gray-400">#{index + 1}</span>
+                          <button
+                            onClick={() => shareQuote(quote)}
+                            className="flex items-center gap-1 text-sm text-purple-600 hover:text-purple-700"
+                          >
+                            <Share2 size={16} />
+                            Share
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>🔥 Connected to Firebase - Quotes sync in real-time!</p>
+          <p>🔥 Built with passion • {quotes.length} quotes and counting</p>
         </div>
       </div>
     </div>
