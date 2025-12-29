@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ArrowUp, ArrowDown, Plus, Search, MessageSquare, Share2, User, LogOut, LogIn, ChevronDown, ChevronRight, Send } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ArrowUp, ArrowDown, Plus, Search, MessageSquare, Share2, User, LogOut, LogIn, ChevronDown, ChevronRight, Send, X } from 'lucide-react';
 import { database } from './firebase';
 import { ref, onValue, push, set, get } from 'firebase/database';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -16,7 +16,10 @@ export default function QuoteVotingApp() {
   const [filterTag, setFilterTag] = useState('');
   const [filterAuthor, setFilterAuthor] = useState('');
   const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showUsernameModal, setShowUsernameModal] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
   const [viewMode, setViewMode] = useState('all');
   const [expandedQuote, setExpandedQuote] = useState(null);
   const [comments, setComments] = useState({});
@@ -26,8 +29,24 @@ export default function QuoteVotingApp() {
   const auth = getAuth();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+      
+      if (currentUser) {
+        // Check if user has a profile
+        const profileRef = ref(database, `users/${currentUser.uid}`);
+        const snapshot = await get(profileRef);
+        
+        if (snapshot.exists()) {
+          setUserProfile(snapshot.val());
+        } else {
+          // New user - show username modal
+          setShowUsernameModal(true);
+          setUsernameInput(currentUser.displayName || '');
+        }
+      } else {
+        setUserProfile(null);
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -96,6 +115,23 @@ export default function QuoteVotingApp() {
     }
   };
 
+  const saveUsername = async () => {
+    if (!usernameInput.trim() || !user) return;
+    
+    const profile = {
+      username: usernameInput.trim(),
+      email: user.email,
+      photoURL: user.photoURL,
+      createdAt: Date.now()
+    };
+    
+    const userRef = ref(database, `users/${user.uid}`);
+    await set(userRef, profile);
+    
+    setUserProfile(profile);
+    setShowUsernameModal(false);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (newQuote.trim()) {
@@ -106,10 +142,9 @@ export default function QuoteVotingApp() {
         tags: newTags.trim() || '',
         votes: 0,
         timestamp: Date.now(),
-        submittedBy: user ? {
+        submittedBy: user && userProfile ? {
           uid: user.uid,
-          name: user.displayName,
-          email: user.email,
+          username: userProfile.username,
           photoURL: user.photoURL
         } : null
       };
@@ -160,7 +195,7 @@ export default function QuoteVotingApp() {
   };
 
   const submitComment = async (quoteId, textareaId, parentId = null) => {
-    if (!user) {
+    if (!user || !userProfile) {
       alert('Please sign in to comment');
       return;
     }
@@ -174,7 +209,7 @@ export default function QuoteVotingApp() {
       text: text.trim(),
       author: {
         uid: user.uid,
-        name: user.displayName,
+        username: userProfile.username,
         photoURL: user.photoURL
       },
       timestamp: Date.now(),
@@ -254,7 +289,7 @@ export default function QuoteVotingApp() {
               {comment.author.photoURL && (
                 <img src={comment.author.photoURL} className="w-5 h-5 rounded-full" alt="" />
               )}
-              <span className="text-sm font-medium text-gray-700">{comment.author.name}</span>
+              <span className="text-sm font-medium text-gray-700">{comment.author.username}</span>
               <span className="text-xs text-gray-400">{timeAgo}</span>
               {replyCount > 0 && (
                 <button
@@ -393,6 +428,40 @@ export default function QuoteVotingApp() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
+        {/* Username Modal */}
+        {showUsernameModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-800">
+                  {userProfile ? 'Edit Display Name' : 'Choose Your Display Name'}
+                </h2>
+              </div>
+              <p className="text-gray-600 mb-6">
+                {userProfile 
+                  ? 'Update how others see you on Quottit.'
+                  : 'This is how others will see you. You can use your real name or a pseudonym.'}
+              </p>
+              <input
+                type="text"
+                value={usernameInput}
+                onChange={(e) => setUsernameInput(e.target.value)}
+                placeholder="Enter display name..."
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 mb-6"
+                onKeyPress={(e) => e.key === 'Enter' && saveUsername()}
+                autoFocus
+              />
+              <button
+                onClick={saveUsername}
+                disabled={!usernameInput.trim()}
+                className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
+              >
+                {userProfile ? 'Update Username' : 'Continue'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-between items-center mb-8">
           <div className="text-center flex-1">
             <h1 className="text-4xl font-bold text-gray-800 mb-2">Quottit</h1>
@@ -401,14 +470,14 @@ export default function QuoteVotingApp() {
           </div>
           
           <div className="relative">
-            {user ? (
+            {user && userProfile ? (
               <div>
                 <button
                   onClick={() => setShowProfileMenu(!showProfileMenu)}
                   className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/50 transition-colors"
                 >
                   {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.displayName} className="w-10 h-10 rounded-full" />
+                    <img src={user.photoURL} alt={userProfile.username} className="w-10 h-10 rounded-full" />
                   ) : (
                     <User size={24} className="text-gray-600" />
                   )}
@@ -417,7 +486,7 @@ export default function QuoteVotingApp() {
                 {showProfileMenu && (
                   <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg p-4 z-10">
                     <div className="mb-4">
-                      <p className="font-semibold text-gray-800">{user.displayName}</p>
+                      <p className="font-semibold text-gray-800">{userProfile.username}</p>
                       <p className="text-sm text-gray-500">{user.email}</p>
                     </div>
                     <button
@@ -428,6 +497,16 @@ export default function QuoteVotingApp() {
                       className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg mb-2"
                     >
                       My Quotes
+                    </button>
+                    <button
+                      onClick={() => {
+                        setUsernameInput(userProfile.username);
+                        setShowUsernameModal(true);
+                        setShowProfileMenu(false);
+                      }}
+                      className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg mb-2"
+                    >
+                      Edit Username
                     </button>
                     <button
                       onClick={handleSignOut}
@@ -472,7 +551,7 @@ export default function QuoteVotingApp() {
           >
             Quote of the Day
           </button>
-          {user && (
+          {user && userProfile && (
             <button
               onClick={() => setViewMode('myQuotes')}
               className={`px-4 py-2 rounded-lg transition-colors ${
@@ -733,7 +812,7 @@ export default function QuoteVotingApp() {
                               Discussion {commentCount > 0 && `(${commentCount})`}
                             </h3>
 
-                            {user ? (
+                            {user && userProfile ? (
                               <div className="mb-6">
                                 <textarea
                                   id={mainTextareaId}
