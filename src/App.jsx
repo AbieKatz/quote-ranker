@@ -40,9 +40,17 @@ export default function QuoteVotingApp() {
         if (snapshot.exists()) {
           setUserProfile(snapshot.val());
         } else {
-          // New user - show username modal
-          setShowUsernameModal(true);
-          setUsernameInput(currentUser.displayName || '');
+          // New user - auto-create profile with Google name
+          const newProfile = {
+            username: currentUser.displayName || 'Anonymous',
+            email: currentUser.email,
+            photoURL: currentUser.photoURL,
+            createdAt: Date.now(),
+            hasChangedUsername: false
+          };
+          
+          await set(profileRef, newProfile);
+          setUserProfile(newProfile);
         }
       } else {
         setUserProfile(null);
@@ -122,7 +130,8 @@ export default function QuoteVotingApp() {
       username: usernameInput.trim(),
       email: user.email,
       photoURL: user.photoURL,
-      createdAt: Date.now()
+      createdAt: userProfile?.createdAt || Date.now(),
+      hasChangedUsername: userProfile ? true : false // Mark as changed if updating existing profile
     };
     
     const userRef = ref(database, `users/${user.uid}`);
@@ -433,14 +442,13 @@ export default function QuoteVotingApp() {
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-gray-800">
-                  {userProfile ? 'Edit Display Name' : 'Choose Your Display Name'}
-                </h2>
+                <h2 className="text-2xl font-bold text-gray-800">Edit Your Username</h2>
               </div>
-              <p className="text-gray-600 mb-6">
-                {userProfile 
-                  ? 'Update how others see you on Quottit.'
-                  : 'This is how others will see you. You can use your real name or a pseudonym.'}
+              <p className="text-gray-600 mb-2">
+                You can change your username once to use a pseudonym instead of your real name.
+              </p>
+              <p className="text-sm text-orange-600 mb-6 font-medium">
+                ⚠️ This can only be done once - choose carefully!
               </p>
               <input
                 type="text"
@@ -456,7 +464,7 @@ export default function QuoteVotingApp() {
                 disabled={!usernameInput.trim()}
                 className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
               >
-                {userProfile ? 'Update Username' : 'Continue'}
+                Save Username (Final)
               </button>
             </div>
           </div>
@@ -498,16 +506,18 @@ export default function QuoteVotingApp() {
                     >
                       My Quotes
                     </button>
-                    <button
-                      onClick={() => {
-                        setUsernameInput(userProfile.username);
-                        setShowUsernameModal(true);
-                        setShowProfileMenu(false);
-                      }}
-                      className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg mb-2"
-                    >
-                      Edit Username
-                    </button>
+                    {!userProfile.hasChangedUsername && (
+                      <button
+                        onClick={() => {
+                          setUsernameInput(userProfile.username);
+                          setShowUsernameModal(true);
+                          setShowProfileMenu(false);
+                        }}
+                        className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg mb-2"
+                      >
+                        Edit Username (One Time)
+                      </button>
+                    )}
                     <button
                       onClick={handleSignOut}
                       className="w-full flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg"
